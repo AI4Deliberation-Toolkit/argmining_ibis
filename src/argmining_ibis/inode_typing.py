@@ -6,10 +6,8 @@ import asyncio
 from .utils import batch_list
 from .llm_caller import assign_question_types, assign_proposition_types
 
-CONCURRENCY = 2
 
-
-async def subtype_nodes(xaif, file_name='', save_to_dir=''):
+async def subtype_nodes(xaif, file_name='', save_to_dir='', concurrency=2):
     q_results = {"infoseekq": [], "delibq":[]}
     p_results = {"fact": [], "policy": [], "value": []}
     
@@ -26,7 +24,7 @@ async def subtype_nodes(xaif, file_name='', save_to_dir=''):
 
 
     # Create and run tasks for batches of questions
-    semaphore = asyncio.Semaphore(CONCURRENCY)
+    semaphore = asyncio.Semaphore(concurrency)
     async def subtype_batch_of_questions(b):
         async with semaphore:
             return await assign_question_types(b)
@@ -38,7 +36,7 @@ async def subtype_nodes(xaif, file_name='', save_to_dir=''):
 
 
     # Create and run tasks for batches of questions
-    semaphore = asyncio.Semaphore(CONCURRENCY)
+    semaphore = asyncio.Semaphore(concurrency)
     async def subtype_batch_of_propositions(b):
         async with semaphore:
             return await assign_proposition_types(b)
@@ -71,7 +69,7 @@ async def subtype_nodes(xaif, file_name='', save_to_dir=''):
                 with open(os.path.join(save_to_dir, file_name), 'w') as f:
                     json.dump(xaif, f, indent=4)
             else:
-                with open(os.path.join(save_to_dir, f"nodetypes_{datetime.datetime.now().strftime("%y%m%d%m%H%M%S")}.json"), 'w') as f:
+                with open(os.path.join(save_to_dir, f"nodetypes_{datetime.datetime.now().strftime("%y%m%d%H%M%S")}.json"), 'w') as f:
                     json.dump(xaif, f, indent=4)
 
     return xaif

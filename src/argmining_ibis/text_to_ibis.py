@@ -442,7 +442,7 @@ async def text_to_ibis(input_text, topic, origin_name='', doc_source=False, save
         if origin_name:
             file_base_incl_number = origin_name.rsplit('.',1)[0]
         else: 
-            file_base_incl_number = f"unknown_{datetime.datetime.now().strftime("%y%m%d%m%H%M%S")}"
+            file_base_incl_number = f"unknown_{datetime.datetime.now().strftime("%y%m%d%H%M%S")}"
 
     # Check if this is a chunk: if so, get the number
     if origin_name:

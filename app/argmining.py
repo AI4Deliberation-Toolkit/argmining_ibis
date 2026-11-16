@@ -14,6 +14,7 @@ import asyncio
 
 from argmining_ibis import intake_files
 from argmining_ibis import text_to_ibis
+from argmining_ibis import merge_ibis_chunks
 from argmining_ibis import merge_ibis
 from argmining_ibis import condense_ibis
 from argmining_ibis import crosslink_ibis
@@ -22,7 +23,6 @@ from argmining_ibis import inode_typing
 
 
 DEV_MODE = os.getenv('DEV_MODE', False)
-CONCURRENCY=os.getenv('CONCURRENCY', 4)
 CHUNK_SIZE=os.getenv('CHUNK_SIZE', 2000)
 
 logger = logging.getLogger()
@@ -33,17 +33,19 @@ formatter = logging.Formatter('[%(asctime)s][%(levelname)s]: %(message)s')
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
-async def argmine_ibis(topic, temp_dir):
+async def argmine_ibis(topic, temp_dir, concurrency=2):
     chunk_size=CHUNK_SIZE
     logger.info("Chunk size: %s", str(chunk_size))
-    semaphore = asyncio.Semaphore(CONCURRENCY)
+    semaphore = asyncio.Semaphore(concurrency)
 
     try:
         orig_dir = os.path.join(temp_dir, 'orig_files')
         text_dir = os.path.join(temp_dir, 'input_text')
+        chunk_dir = os.path.join(temp_dir, 'chunks')
         stamped_text_dir = os.path.join(temp_dir, 'stamped_text')
         os.mkdir(text_dir)
         os.mkdir(stamped_text_dir)
+        os.mkdir(chunk_dir)
 
         # Convert input files to plaintext
         local_input_files = glob(os.path.join(orig_dir, "*"))
@@ -77,7 +79,7 @@ async def argmine_ibis(topic, temp_dir):
                 logger.info('Running text_to_ibis on %s', file_entry['origin'])
                 chunk_names += [file_entry['origin']]
                 try:
-                    xaif_creation_tasks.append(create_xaif(file_entry['text'][0], origin_name=file_entry['origin'], save_to_dir=temp_dir))
+                    xaif_creation_tasks.append(create_xaif(file_entry['text'][0], origin_name=file_entry['origin'], save_to_dir=chunk_dir))
                 except Exception as e:
                     logger.error('Failed to get initial text analysis for %s', file_entry['origin'], exc_info=True)
             
@@ -94,7 +96,7 @@ async def argmine_ibis(topic, temp_dir):
 
                     logger.info('Running text_to_ibis on content from %s (part %s/%s)', chunk_name, str(counter+1), str(len(file_entry['text'])))
                     try:
-                        xaif_creation_tasks.append(create_xaif(chunk, origin_name=chunk_name, save_to_dir=temp_dir))
+                        xaif_creation_tasks.append(create_xaif(chunk, origin_name=chunk_name, save_to_dir=chunk_dir))
                         logger.info("Completed for part %s", str(counter))
                     except Exception as e:
                         logger.error('Failed to get initial text analysis for %s', chunk_name, exc_info=True)
@@ -123,7 +125,8 @@ async def argmine_ibis(topic, temp_dir):
         #####################################
         logger.info('Merging files into a single file')
         try:
-            merged_xaif = merge_ibis.merge_xaif_list(xaif_list, save_to_dir=temp_dir)
+            merged_xaif = merge_ibis_chunks.merge_ibis_list_with_parent(xaif_list, topic, save_to_dir=temp_dir)
+
         except Exception as e:
             logger.error("File merging failed", exc_info=True)
 
@@ -134,7 +137,7 @@ async def argmine_ibis(topic, temp_dir):
         ###################################################################
         
         # Need to update the locating stamps to reference the chunk they were found in
-        # (same update was done to L-node IDs when chunkes merged: they must continue to match)
+        # (same update was done to L-node IDs when chunks merged: they must continue to match)
         def update_stamps(list_of_chunks):
             restamped_text = ""
             for i, chunk in enumerate(list_of_chunks):
@@ -159,15 +162,15 @@ async def argmine_ibis(topic, temp_dir):
         remerged_text = update_stamps(marked_text_list)
         merged_xaif = text_to_ibis.add_sources_to_xaif(merged_xaif, remerged_text)
 
-
-        
+        with open(os.path.join(temp_dir, f"sourced_{datetime.datetime.now().strftime("%y%m%d%H%M%S")}.json"), 'w') as f:
+            json.dump(merged_xaif, f, indent=4)
 
         ##################
         # 4. Merge nodes #
         ##################
         logger.info('Merging nodes')
         try:
-            merged_xaif = await merge_ibis.merge_ibis_nodes(merged_xaif, save_to_dir=temp_dir)
+            merged_xaif = await merge_ibis.merge_ibis_nodes(merged_xaif, save_to_dir=temp_dir, concurrency=concurrency)
         except Exception as e:
             logger.error("Node merging failed", exc_info=True)
 
@@ -185,7 +188,7 @@ async def argmine_ibis(topic, temp_dir):
         ################# 
         logger.info('Linking nodes')
         try:
-            result_xaif = await crosslink_ibis.link_nodes(condensed_xaif, save_to_dir=temp_dir)
+            result_xaif = await crosslink_ibis.link_nodes(condensed_xaif, concurrency=concurrency, save_to_dir=temp_dir)
         except Exception as e:
             logger.error("Node linking failed", exc_info=True)
 
@@ -197,15 +200,12 @@ async def argmine_ibis(topic, temp_dir):
         ###############################
         logger.info('Typing nodes')
         try:
-            result_xaif = await inode_typing.subtype_nodes(result_xaif, save_to_dir=temp_dir)
+            result_xaif = await inode_typing.subtype_nodes(result_xaif, save_to_dir=temp_dir, concurrency=concurrency)
         except Exception as e:
             logger.info("Node typing failed")
 
         logger.info("!!! NODE TYPING DONE")
 
-
-
-    
     # Clear temp directory at the end if this wasn't in devmode
     finally:
         if not DEV_MODE:

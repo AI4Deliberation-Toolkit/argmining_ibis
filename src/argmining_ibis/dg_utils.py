@@ -13,8 +13,6 @@ def get_orphans(ibis_xaif):
     parented = list(set([e['fromID'] for e in non_crosslink_edges]))
 
     # Orphans are any I-nodes which aren't parented
-    # i_nodes = [n['nodeID'] for n in ibis_xaif['AIF']['nodes'] if n['type'] == 'I']
-    # orphans = [n_id for n_id in i_nodes if n_id not in parented]
     i_nodes = [n for n in ibis_xaif['AIF']['nodes'] if n['type'] == 'I']
     orphans = [n for n in i_nodes if n['nodeID'] not in parented]
     return orphans
