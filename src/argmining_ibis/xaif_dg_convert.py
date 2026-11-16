@@ -1,6 +1,8 @@
-from . import dg_utils
 from collections import Counter
 from copy import deepcopy
+import asyncio
+
+from . import dg_utils, utils, llm_caller
 
 ################
 # Quick makers #
@@ -117,12 +119,14 @@ def replace_ids(ibis_xaif):
         ibis_xaif['IBIS']['positions'] = [new_id if x == old_id else x for x in ibis_xaif['IBIS']['positions']]
         ibis_xaif['IBIS']['arguments'] = [new_id if x == old_id else x for x in ibis_xaif['IBIS']['arguments']]
 
-        for subtype in ibis_xaif['AIF']['propTypes']:
-            ibis_xaif['AIF']['propTypes'][subtype] = [new_id if x == old_id else x for x in ibis_xaif['AIF']['propTypes'][subtype]]
+        if 'propTypes' in ibis_xaif['AIF']:
+            for subtype in ibis_xaif['AIF']['propTypes']:
+                ibis_xaif['AIF']['propTypes'][subtype] = [new_id if x == old_id else x for x in ibis_xaif['AIF']['propTypes'][subtype]]
 
-        if n['type'] == "L":
-            for loc in ibis_xaif['AIF']['locutions']:
-                loc['nodeID'] = new_id if loc['nodeID'] == old_id else loc['nodeID']
+        if 'locutions' in ibis_xaif['AIF']:
+            if n['type'] == "L":
+                for loc in ibis_xaif['AIF']['locutions']:
+                    loc['nodeID'] = new_id if loc['nodeID'] == old_id else loc['nodeID']
 
         id_counter += 1
     
@@ -224,8 +228,8 @@ def resolve_duplicates(dg_dict):
     # resolve_duplicates(dg_dict)
 
 
-
-def xaif_to_dg(ibis_xaif, topic):
+# Create a DG map when there is no single top-level Issue in the XAIF by giving a map title directly
+def xaif_to_dg_manual_topic(ibis_xaif, topic):
     # Setup
     dg_dict = {
         "Nodes": [],
@@ -271,4 +275,89 @@ def xaif_to_dg(ibis_xaif, topic):
 
     # TODO: Also duplicate crosslinkage
 
+    return dg_dict
+
+
+def xaif_to_dg(ibis_xaif, delib_id=-1):
+    # Setup
+    dg_dict = {
+        "Nodes": [],
+        "Crosslinks": []
+    }
+
+    # Give XAIF nodes new int IDs that can be used in DG.
+    replace_ids(ibis_xaif)
+
+    # Identify the top node
+    try:
+        top_xaif_node = dg_utils.get_orphans(ibis_xaif)[0]
+    except:
+        # Can't find any orphans, nowhere to start map
+        return dg_dict
+
+    # Add the top-level node (would not otherwise be added: it is not the ant in any relation)
+    # If no parent, it's a Map node: if it's being attached, it's an Issue node
+    if delib_id == -1:
+        top_type = "Map"
+    else:
+        top_type = "Issue"
+
+    map_node = make_dg_node(top_xaif_node['nodeID'], delib_id, top_type, top_xaif_node['text'], top_xaif_node['text'], '', 0)
+    dg_dict['Nodes'].append(map_node)
+
+    # Create crosslinks (simply)
+    all_crosslinks = get_all_crosslinks(ibis_xaif)
+    for link in all_crosslinks:
+        for a in link['ant']:
+            for c in link['cons']:
+                dg_dict['Crosslinks'].append(make_dg_crosslink("Variant", a['nodeID'], c['nodeID']))
+
+
+    # Create nodes: create a child/ant node for every attachment
+    all_non_cl_rels = [n for n in ibis_xaif['AIF']['nodes'] if n['type'] in ['RA', 'CA', 'MA'] and n['text'] != "Cross Link"]
+    for rel in all_non_cl_rels:
+        nodes_in_rel = get_nodes_in_rel(rel, ibis_xaif)
+
+        for ant in nodes_in_rel['ant']:
+            prop_type = get_prop_type(ant['nodeID'], ibis_xaif)
+            source_texts = dg_utils.get_source_locations(ant['nodeID'], ibis_xaif)
+            source_texts = f"{prop_type}\n\n{source_texts}"
+
+            dg_node_type = get_dg_type(ant['nodeID'], nodes_in_rel['rel']['type'], ibis_xaif)
+            # create child/ant node for each parent/cons it attaches to
+            for cons in nodes_in_rel['cons']:
+                new_node = make_dg_node(ant['nodeID'], cons['nodeID'], dg_node_type, ant['text'],ant['text'], source_texts)
+                dg_dict["Nodes"].append(new_node)
+
+    # Turn any duplicate IDs into different branches
+    resolve_duplicates(dg_dict)
+
+    return dg_dict
+
+
+# Reduce length of text that will go in the HeadingText field to the length that DG accepts
+async def shorten_headers(dg_dict, concurrency=4):
+    input_list_all = [(n['NodeID'], n['HeadingText']) for n in dg_dict['Nodes'] if len(n['HeadingText']) > 70]
+
+    semaphore = asyncio.Semaphore(concurrency)
+    async def shorten_titles_in_batch(b):
+        async with semaphore:
+            return await llm_caller.shorten_for_dg(b)
+
+    title_shortening_tasks = []
+    batches = utils.batch_list(input_list_all)
+    for b in batches:
+        title_shortening_tasks.append(shorten_titles_in_batch(b))
+    result_lists = await asyncio.gather(*title_shortening_tasks)
+
+    output_list_all = []
+    for batch_result in result_lists:
+        output_list_all += batch_result['pairs']
+
+    for update in output_list_all:
+        try:
+            node_to_update = [n for n in dg_dict['Nodes'] if n['NodeID'] == update['id']][0]
+            node_to_update['HeadingText'] = update['text']
+        except:
+            pass
     return dg_dict

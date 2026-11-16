@@ -49,8 +49,6 @@ limiter = Limiter(
 )
 
 
-CONCURRENCY=4
-
 
 ###########################
 # Testing/dev entrypoints #
@@ -312,6 +310,14 @@ def get_celery_task_result():
 @flask_app.route('/', methods=['POST'])
 @limiter.limit("100 per day;10 per 15 minutes")
 async def argmine_ibis_celery():
+    workspace = os.getenv('WORKSPACE', False)
+    if workspace:
+        final_dir = f"{workspace}/output"
+        if not os.path.exists(final_dir):
+            final_dir = ''
+
+    concurrency = int(request.args.get('conc', default=4))
+
     use_cache = os.getenv('ARGMINE_CACHE_ON', False)
     if use_cache:
         logger.info('Using cached results where possible')
@@ -341,7 +347,7 @@ async def argmine_ibis_celery():
         file_dict[file].save(os.path.join(orig_dir, short_filename))
 
     # Give the task to the celery worker
-    result = await tasks.argmining_complete_pipeline.adelay(topic, temp_dir, cache=use_cache)
+    result = await tasks.argmining_complete_pipeline.adelay(topic, temp_dir, save_final_to_dir=final_dir, concurrency=concurrency)
 
     # Return the celery task ID
     logger.info("** Started task %s **", str(result.id))
@@ -351,8 +357,9 @@ async def argmine_ibis_celery():
 
 
 
-
-@flask_app.route('/convert-to-dg', methods=['POST'])
+# Direct conversion of JSON from XAIF to DG
+# Takes a title for the map's top-level node
+@flask_app.route('/quick-convert-to-dg', methods=['POST'])
 def convertor():
     if request.method == 'POST':
 
@@ -391,3 +398,52 @@ def convertor():
         os.remove(xaif_filename)
 
         return jsonify(dg_format)
+
+
+# Conversion to DG which includes shortening text for DG display limits
+@flask_app.route('/convert-to-dg', methods=['POST'])
+async def convertor_with_titles():
+    if request.method == 'POST':
+        concurrency = int(request.args.get('conc', default=4))
+
+        logger.info("Converting file!")
+
+        f = request.files.get('file')
+        if not f:
+            return jsonify({"error": "No file uploaded"}), 400  # Handle missing file
+
+        delib_id = request.form.get('delib_id')
+        if not delib_id:
+            delib_id = -1
+
+        # Generate unique filenames
+        xaif_filename = f"{uuid.uuid4()}.json"
+        f.save(xaif_filename)
+
+        try:
+            with open(xaif_filename, 'r') as xaif_file:
+                ibis_xaif = json.load(xaif_file)  # Validate JSON format
+        except json.JSONDecodeError:
+            os.remove(xaif_filename)
+            return jsonify({"error": "Invalid JSON format"}), 400
+        
+        logger.info("File loaded")
+
+        ####################################
+        
+        dg_format = xaif_dg_convert.xaif_to_dg(ibis_xaif)
+
+        # Clean up the uploaded file
+        os.remove(xaif_filename)
+        logger.info("Conversion to DG done")
+
+        # test this later when the structure is defs right
+
+        logger.info("Shortening headers")
+        result = await tasks.shorten_dg_headings.adelay(dg_format, concurrency)
+        #####################################
+
+        # Return the celery task ID
+        logger.info("** Started task %s **", str(result.id))
+        logger.info("TASK STARTED (%s): %s"%(result.id, datetime.datetime.now().strftime("%y-%m-%d_%H:%M:%S")))
+        return jsonify({'task_id': result.id})

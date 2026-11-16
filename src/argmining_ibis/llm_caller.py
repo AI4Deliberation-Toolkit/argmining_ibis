@@ -43,7 +43,7 @@ if LLM_API_KEY:
     client = AsyncOpenAI(
         base_url=f"{LLM_URL}/v1",
         api_key=LLM_API_KEY,
-        max_retries=3,
+        max_retries=5,
         timeout=60.0
     )
 
@@ -263,7 +263,7 @@ OUTPUT:''')
 
 
 # Performs the call with retries
-@retry(stop_max_attempt_number=5, wait_fixed=2000)
+# @retry(stop_max_attempt_number=5, wait_fixed=2000)
 async def make_call_with_retry(messages, output_format=None, model_name=MODEL_NAME):
     if output_format:
         logger.info("Making call...")
@@ -732,5 +732,42 @@ Output list:
     
     messages = [{'role': 'user', 'content': prompt}]
     result = await call_llm(messages, propositionTypes)
+    
+    return result
+
+
+
+async def shorten_for_dg(input_list):
+    class idTextPair(BaseModel):
+        id:int
+        text:str
+    class idTextList(BaseModel):
+        pairs: List[idTextPair]
+
+
+    prompt = f'''
+    For the given input list of pairs of ID codes and original sentences, rephrase them to being at most 65 characters.
+    Preserve the meaning of the original text as much as possible.
+    Return a list of the rephrases as pairs of the original ID code and the rephrased sentence.
+    Use UK spelling.
+    
+    
+    Example input 1:
+    [(0, "What financial support is available to people unable to work due to long covid, particularly former key workers?"), (32, "What advice did Boris Johnson receive about long covid during the pandemic, and why was he sceptical of the seriousness of the condition?"), (105, "The British Medical Association has called for financial support and improved services for doctors and healthcare staff affected by long covid due to its impact on the NHS workforce."), (97, "The National Institute for Health and Care Excellence (NICE) has produced guidance covering the identification, assessment and management of the long-term effects of Covid-19.")]
+
+    
+    Example output 1:
+    [(0, What financial support is available to people unable to work due to long covid?"),(32,"What advice did Boris Johnson receive about long covid during the pandemic?"), (105, "The British Medical Association has called for support for affected staff."), (97, "NICE has produced guidance related to the long-term effects of Covid-19.")]
+    
+    
+    
+    Input list:
+    {input_list}
+    
+    Output list:
+    '''
+        
+    messages = [{'role': 'user', 'content': prompt}]
+    result = await call_llm(messages, idTextList)
     
     return result
