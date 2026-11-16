@@ -273,6 +273,7 @@ async def make_call_with_retry(messages, output_format=None, model_name=MODEL_NA
                     model=model_name,
                     messages=[{"role": msg['role'], "content": msg['content']} for msg in messages],
                     response_format=output_format,
+                    reasoning_effort="none",
                     timeout=120
                 )
     else:
@@ -281,6 +282,7 @@ async def make_call_with_retry(messages, output_format=None, model_name=MODEL_NA
         response = await client.chat.completions.create(
                     model=model_name,
                     messages=[{"role": msg['role'], "content": msg['content']} for msg in messages],
+                    reasoning_effort="none",
                     timeout=120
                 )
     
