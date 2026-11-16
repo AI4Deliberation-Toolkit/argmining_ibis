@@ -86,6 +86,7 @@ def get_ibis_type(node_id, ibis_xaif):
 
 # Get orphan I-nodes in a graph.
 # Parented I-nodes are the starting point of an edge towards something other than a crosslink.
+# (counterintutively, parented I-nodes are antecedents: an IBIS 'top level parent' is the final consequent)
 # Orphans will be the collection of all other I-nodes.
 def get_orphans(ibis_xaif):
     # Identify cross-links so they aren't treated as ancestry
@@ -106,6 +107,7 @@ def get_orphans(ibis_xaif):
 
 # Get child I-nodes of a specific node
 # Child I-nodes are the starting point of a minimal path (1 rel only) to the parent node.
+# (again: child I-nodes are the antecedents to parents)
 def get_children(node_id, ibis_xaif):
     # Identify cross-links so they aren't treated as ancestry
     crosslink_node_ids = [n['nodeID'] for n in ibis_xaif['AIF']['nodes'] 
@@ -124,11 +126,12 @@ def get_children(node_id, ibis_xaif):
 
 
 # Get parent I-nodes of a specific node
+# (parents are consequents due to IBIS edge directions)
 def get_parents(node_id, ibis_xaif):
     # Identify cross-links so they aren't treated as ancestry
     crosslink_node_ids = [n['nodeID'] for n in ibis_xaif['AIF']['nodes'] 
                       if n['type'] == 'MA' and n['text'] == 'Cross Link']
-
+  
     # (Non-crosslink) relations targeting the child
     outgoing_rel_nodes = [e['toID'] for e in ibis_xaif['AIF']['edges'] if e['fromID'] == node_id and e['toID'] not in crosslink_node_ids]
 
@@ -301,6 +304,84 @@ def add_crosslink(node_id_1, node_id_2, ibis_xaif):
     return ibis_xaif
 
 
+#######################
+# Topic Cut and Paste #
+
+# Remove the nodes and edges for the topic, returning a dict with the nodes for future restoration
+def cut_topic(xaif):
+
+    # Get issues attached to the topic
+    topic_node_list = get_orphans(xaif)
+    if len(topic_node_list) == 1: # expected if topic node has been attached: continue to cut off
+        # Identify the topic nodes: I, and anchoring YA and L.
+        topic_i_id = topic_node_list[0]
+
+        # Keep the nodes and edges of the topic itself
+        topic_i = [n for n in xaif['AIF']['nodes'] if n['nodeID'] == topic_i_id][0]
+
+        edges_to_topic_i = [e for e in xaif['AIF']['edges'] if e['toID'] == topic_i_id]
+        linked_to_i = [e['fromID'] for e in edges_to_topic_i]
+        topic_ya = [n for n in xaif['AIF']['nodes'] if n['type'] == 'YA' and n['nodeID'] in linked_to_i][0]
+
+        edges_to_topic_ya = [e for e in xaif['AIF']['edges'] if e['toID'] == topic_ya['nodeID']]
+        linked_to_ya = [e['fromID'] for e in edges_to_topic_ya]
+        topic_l = [n for n in xaif['AIF']['nodes'] if n['type'] == 'L' and n['nodeID'] in linked_to_ya][0]
+
+        l_ya_edge = [e for e in edges_to_topic_ya if e['fromID'] == topic_l['nodeID']][0]
+        ya_i_edge = [e for e in edges_to_topic_i if e['fromID'] == topic_ya['nodeID']][0]
+
+        xaif['AIF']['nodes'].remove(topic_i)
+        xaif['AIF']['nodes'].remove(topic_ya)
+        xaif['AIF']['nodes'].remove(topic_l)
+        xaif['AIF']['edges'].remove(l_ya_edge)
+        xaif['AIF']['edges'].remove(ya_i_edge)
+
+        # Remove S-node links with the topic
+        # Identify cross-links so they aren't treated as ancestry
+        crosslink_node_ids = [n['nodeID'] for n in xaif['AIF']['nodes'] 
+                        if n['type'] == 'MA' and n['text'] == 'Cross Link']
+    
+        # Get the (non-crosslink/ya) relations targeting the topic
+        rel_node_ids = [e['fromID'] for e in xaif['AIF']['edges'] if e['toID'] == topic_i['nodeID'] and e['fromID'] not in crosslink_node_ids and e['fromID'] != topic_ya['nodeID']]
+
+        # Remove all of these relation nodes and their associated edges, orphaning the issues previously attached to the topic
+        rel_nodes = [n for n in xaif['AIF']['nodes'] if n['nodeID'] in rel_node_ids]
+        rel_edges = [e for e in xaif['AIF']['edges'] if e['fromID'] in rel_node_ids or e['toID'] in rel_node_ids]
+        for n in rel_nodes:
+            xaif['AIF']['nodes'].remove(n)
+        for e in rel_edges:
+            xaif['AIF']['edges'].remove(e)
+
+        return {'topicI': topic_i, 'topicYA': topic_ya, 'topicL': topic_l}
+
+    else: 
+        return None
+
+
+# Re-add the topic nodes, reconnect them, and re-attach the top-level issues
+def reattach_topic(topic_dict, xaif):
+    if not topic_dict: # if topic dict has nothing, just return
+        return xaif
+
+    # Get nodes that need attaching
+    top_issues = get_orphans(xaif)
+    
+    # Add topic nodes back in
+    xaif['AIF']['nodes'].append(topic_dict['topicI'])
+    xaif['AIF']['nodes'].append(topic_dict['topicYA'])
+    xaif['AIF']['nodes'].append(topic_dict['topicL'])
+    
+    # Reconnect them
+    edge_counter = max([e['edgeID'] for e in xaif['AIF']['edges']]) + 1 if len(xaif['AIF']['edges']) > 0 else 1
+    add_edge(topic_dict['topicL']['nodeID'],topic_dict['topicYA']['nodeID'],edge_counter, xaif)
+    edge_counter += 1
+    add_edge(topic_dict['topicYA']['nodeID'],topic_dict['topicI']['nodeID'],edge_counter, xaif)
+
+    # Connect the top issues to the topic
+    for issue_id in top_issues:
+        add_s_node_with_edges(f"rel{issue_id}_{topic_dict['topicI']['nodeID']}",'MA','Related Issue',[issue_id],topic_dict['topicI']['nodeID'],xaif)
+
+    return xaif
 
 ##########
 # Typing #

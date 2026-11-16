@@ -61,7 +61,10 @@ Output list:
     return result
 
 
-async def condense_top_issues(xaif, max_issues=5):
+async def condense_ibis(xaif, max_issues=5, file_name='', save_to_dir=''):
+    # Cut off topic node and keep aside
+    topic_nodes = utils.cut_topic(xaif)
+    
     top_issues = top_level_issues(xaif)
     issues_to_group = []
     for i in top_issues:
@@ -98,20 +101,17 @@ async def condense_top_issues(xaif, max_issues=5):
         # Anchor the summarising parent node in the sources of all the child nodes it was derived from
         for k, l_node_id in enumerate(contributing_l_nodes):
             utils.add_s_node_with_edges(f"ya_{k}_{parent_id}", "YA", "Default Illocuting", [l_node_id], parent_id, xaif)
-    
-    return xaif
 
-
-
-async def condense_ibis(xaif, file_name='', save_to_dir=''):
-    xaif = await condense_top_issues(xaif)
+    # Restore topic node and attach top level issues
+    if topic_nodes:
+        utils.reattach_topic(topic_nodes,xaif)
 
     if save_to_dir:
         if file_name:
             with open(os.path.join(save_to_dir, file_name), 'w') as f:
                 json.dump(xaif, f, indent=4)
         else:
-            with open(os.path.join(save_to_dir, f"condensed_{datetime.datetime.now().strftime("%y%m%d%m%H%M%S")}.json"), 'w') as f:
+            with open(os.path.join(save_to_dir, f"condensed_{datetime.datetime.now().strftime("%y%m%d%H%M%S")}.json"), 'w') as f:
                 json.dump(xaif, f, indent=4)
-
+    
     return xaif

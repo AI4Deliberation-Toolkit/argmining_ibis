@@ -12,7 +12,7 @@ from sentence_transformers import CrossEncoder
 
 
 from . import llm_caller
-from .utils import new_ibis_aif, get_ibis_type, node_merge_output, get_orphans, get_children, get_descendants, batch_list
+from . import utils
 
 import logging
 logging.getLogger("openai").setLevel(logging.INFO)
@@ -25,7 +25,6 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 HF_TOKEN = Path('/run/secrets/HF_KEY.txt').read_text().strip() if Path('/run/secrets/HF_KEY.txt').exists() else None
-CONCURRENCY = 2
 
 cross_enc_model = CrossEncoder("cross-encoder/stsb-roberta-base")
 
@@ -33,55 +32,7 @@ def test_crossencoder():
     score = cross_enc_model.predict([("Dundee is the sunniest city in Scotland.", "The children of Ulster thank you for your work.")])
     return score
 
-################
-# File merging #
-################
 
-# Combine multiple IBIS XAIF dicts into one.
-def merge_xaif_list(xaif_list, file_name='', save_to_dir=''):
-    merged_xaif_dict = new_ibis_aif()
-
-    for i, current_xaif in enumerate(xaif_list):
-        # with open(input_path) as f:
-            # current_aif = json.loads(f.read())
-
-        # Core
-        for n in current_xaif['AIF']['nodes']:
-            old_id = n['nodeID']
-            n['nodeID'] = f"{old_id}_{i}"
-
-        # Seems silly to go through the edges separately, but it might actually
-        # be more sensible than searching for all relevant edges every time you update a node.
-        for e in current_xaif['AIF']['edges']:
-            old_from_id = e['fromID']
-            old_to_id = e['toID']
-            e['fromID'] = f"{old_from_id}_{i}"
-            e['toID'] = f"{old_to_id}_{i}"
-
-        merged_xaif_dict['AIF']['nodes'] += current_xaif['AIF']['nodes']
-        merged_xaif_dict['AIF']['edges'] += current_xaif['AIF']['edges']
-
-        # Doing this 
-        for t in ['issues', 'positions', 'arguments']:
-            current_xaif['IBIS'][t] = [f"{old_id}_{i}" for old_id in current_xaif['IBIS'][t]]
-
-        merged_xaif_dict['IBIS']['issues'] += current_xaif['IBIS']['issues']
-        merged_xaif_dict['IBIS']['positions'] += current_xaif['IBIS']['positions']
-        merged_xaif_dict['IBIS']['arguments'] += current_xaif['IBIS']['arguments']
-
-    for j, e in enumerate(merged_xaif_dict['AIF']['edges']):
-        e['edgeID'] = j
-
-
-    if save_to_dir:
-        if file_name:
-            with open(os.path.join(save_to_dir, file_name), 'w') as f:
-                json.dump(merged_xaif_dict, f, indent=4)
-        else:
-            with open(os.path.join(save_to_dir, f"xaifmerge_{datetime.datetime.now().strftime("%y%m%d%m%H%M%S")}.json"), 'w') as f:
-                json.dump(merged_xaif_dict, f, indent=4)
-    
-    return merged_xaif_dict
 
 
 ##########################
@@ -110,7 +61,7 @@ def merge_nodesets(node_merge_results, ibis_xaif, verbose=False):
         
         # Use an original node as foundation
         new_node = deepcopy(nodes_to_merge[0])
-        ibis_type = get_ibis_type(new_node['nodeID'], ibis_xaif)
+        ibis_type = utils.get_ibis_type(new_node['nodeID'], ibis_xaif)
 
         # Initialise the new values
         new_node['nodeID'] = new_id
@@ -139,20 +90,20 @@ def merge_nodesets(node_merge_results, ibis_xaif, verbose=False):
 
 
 # Type-specific prompts: return IDs of nodes to merge, and the text to use in the merge
-async def get_issues_to_merge(issues, verbose=False):
+async def get_issues_to_merge(issues, concurrency=2, verbose=False):
     input_list = [(n['nodeID'], n['text']) for n in issues]
     base_merger = {'merges':[]}
 
     if len(input_list) < 2:
         return base_merger
     
-    semaphore = asyncio.Semaphore(CONCURRENCY)
+    semaphore = asyncio.Semaphore(concurrency)
     async def get_issues_to_merge_for_batch(b):
         async with semaphore:
             return await llm_caller.issues_to_merge(b)
 
     issue_merger_tasks = []
-    batches = batch_list(input_list)
+    batches = utils.batch_list(input_list)
     for b in batches:
         issue_merger_tasks.append(get_issues_to_merge_for_batch(b))
     issue_mergeset_list = await asyncio.gather(*issue_merger_tasks)
@@ -163,7 +114,7 @@ async def get_issues_to_merge(issues, verbose=False):
     return base_merger
 
 
-async def get_propositions_to_merge(propositions):
+async def get_propositions_to_merge(propositions, concurrency=2):
     # input_list = [(n['nodeID'], n['text']) for n in ibis_xaif['AIF']['nodes'] if n['nodeID'] in proposition_ids]
     input_list = [(n['nodeID'], n['text']) for n in propositions]
     base_merger = {'merges':[]}    
@@ -171,13 +122,13 @@ async def get_propositions_to_merge(propositions):
     if len(input_list) < 2:
         return base_merger
     
-    semaphore = asyncio.Semaphore(CONCURRENCY)
+    semaphore = asyncio.Semaphore(concurrency)
     async def get_props_to_merge_for_batch(b):
         async with semaphore:
             return await llm_caller.propositions_to_merge(b)
 
     prop_merger_tasks = []
-    batches = batch_list(input_list)
+    batches = utils.batch_list(input_list)
     for b in batches:
         prop_merger_tasks.append(get_props_to_merge_for_batch(b))
     prop_mergeset_list = await asyncio.gather(*prop_merger_tasks)
@@ -193,7 +144,7 @@ async def get_propositions_to_merge(propositions):
 # Check whether sibling nodes of the same type can be merged, and the same for the children of any merged nodes
 # When using, start by providing the set of parentless nodes
 # Happens in-place: only need what it returns if you want to do more
-async def merge_siblings(sibling_ids, ibis_xaif, verbose=False):
+async def merge_siblings(sibling_ids, ibis_xaif, concurrency=2, verbose=False):
     if len(sibling_ids) < 2:
         if verbose:
             print("Don't have plural siblings to consider merging")
@@ -210,7 +161,7 @@ async def merge_siblings(sibling_ids, ibis_xaif, verbose=False):
                       and n['nodeID'] in ibis_xaif['IBIS']['issues']]
     if verbose:
         print(f"Issues in this sibling set: {issue_siblings}")
-    issues_to_merge = await get_issues_to_merge(issue_siblings, verbose=verbose)
+    issues_to_merge = await get_issues_to_merge(issue_siblings, concurrency=concurrency)
     if verbose:
         print("Will merge these issues: ", issues_to_merge)
 
@@ -218,7 +169,7 @@ async def merge_siblings(sibling_ids, ibis_xaif, verbose=False):
     position_siblings = [n for n in ibis_xaif['AIF']['nodes'] 
                 if n['nodeID'] in sibling_ids 
                 and n['nodeID'] in ibis_xaif['IBIS']['positions']]
-    positions_to_merge = await get_propositions_to_merge(position_siblings)
+    positions_to_merge = await get_propositions_to_merge(position_siblings, concurrency=concurrency)
     if verbose:
         print("Will merge these positions: ", positions_to_merge)
 
@@ -226,7 +177,7 @@ async def merge_siblings(sibling_ids, ibis_xaif, verbose=False):
     argument_siblings = [n for n in ibis_xaif['AIF']['nodes'] 
             if n['nodeID'] in sibling_ids 
             and n['nodeID'] in ibis_xaif['IBIS']['arguments']]
-    arguments_to_merge = await get_propositions_to_merge(argument_siblings)
+    arguments_to_merge = await get_propositions_to_merge(argument_siblings, concurrency=concurrency)
     if verbose:
         print("Will merge these arguments: ", arguments_to_merge)
 
@@ -240,14 +191,14 @@ async def merge_siblings(sibling_ids, ibis_xaif, verbose=False):
     for new_node in new_merger_ids:
         if verbose:
             print(f"Checking for further merges among children of {new_node}")
-        ibis_xaif = await merge_siblings(get_children(new_node, ibis_xaif), ibis_xaif)
+        ibis_xaif = await merge_siblings(utils.get_children(new_node, ibis_xaif), ibis_xaif, concurrency=concurrency)
 
     return ibis_xaif
 
 
 
-async def graft_issues(ibis_xaif, verbose=False):
-    orphans = get_orphans(ibis_xaif)
+async def graft_issues(ibis_xaif, concurrency=2, verbose=False):
+    orphans = utils.get_orphans(ibis_xaif)
     
     # Only issues should ever be orphans anyway, but check.
     orphan_issues = [n['nodeID'] for n in ibis_xaif['AIF']['nodes'] 
@@ -262,13 +213,13 @@ async def graft_issues(ibis_xaif, verbose=False):
     list_other = [(n['nodeID'], n['text']) for n in ibis_xaif['AIF']['nodes'] if n['nodeID'] in other_issues]
 
 
-    semaphore = asyncio.Semaphore(CONCURRENCY)
+    semaphore = asyncio.Semaphore(concurrency)
     async def batch_issues_across_lists(list_a, list_b):
         async with semaphore:
             return await llm_caller.issues_to_merge_across_lists(list_a, list_b)
 
-    orphan_batches = batch_list(list_orphans)
-    other_batches = batch_list(list_other)
+    orphan_batches = utils.batch_list(list_orphans)
+    other_batches = utils.batch_list(list_other)
 
     cross_list_merger_tasks = []
     for orphans in orphan_batches:
@@ -291,7 +242,7 @@ async def graft_issues(ibis_xaif, verbose=False):
                 # Verify each pair is an orphan and non-orphan (in that order)
                 # Keep only after checking the non-orphan is not descended from the orphan
                 if pair['ids'][0] in orphan_issues and  pair['ids'][1] in other_issues:
-                    orphan_descendants = get_descendants(pair['ids'][0], ibis_xaif)
+                    orphan_descendants = utils.get_descendants(pair['ids'][0], ibis_xaif)
                     if pair['ids'][1] not in orphan_descendants:
                         all_merges['merges'] += [pair]
 
@@ -357,7 +308,7 @@ async def graft_issues(ibis_xaif, verbose=False):
     new_merger_ids = merge_nodesets(node_merge_results, ibis_xaif, verbose=verbose)
     # Check whether you need to merge any children in the combined child sets
     for new_node in new_merger_ids:
-        children = get_children(new_node, ibis_xaif)
+        children = utils.get_children(new_node, ibis_xaif)
         ibis_xaif = await merge_siblings(children, ibis_xaif)
     
     return ibis_xaif
@@ -371,19 +322,26 @@ async def graft_issues(ibis_xaif, verbose=False):
 # Merge IBIS nodes based on structure.
 # Issues may be merged if at least one has no parent
 # Other nodes may only be merged if they are siblings (potentially due to merging of their parent issues)
-async def merge_ibis_nodes(ibis_xaif, file_name='', save_to_dir='', verbose=False):
+async def merge_ibis_nodes(ibis_xaif, file_name='', save_to_dir='', verbose=False, concurrency=2):
+    # Cut off topic node and keep aside
+    topic_nodes = utils.cut_topic(ibis_xaif)
+    
     # Attempt to merge orphans, recursively merge any resulting merged child sets
-    ibis_xaif = await merge_siblings(get_orphans(ibis_xaif), ibis_xaif, verbose=verbose)
+    ibis_xaif = await merge_siblings(utils.get_orphans(ibis_xaif), ibis_xaif, concurrency=concurrency, verbose=verbose)
 
     # Attempt to merge remaining orphan issues with sub issues
-    ibis_xaif = await graft_issues(ibis_xaif, verbose=verbose)
+    ibis_xaif = await graft_issues(ibis_xaif, concurrency=concurrency, verbose=verbose)
+
+    # Restore topic node and attach issues
+    if topic_nodes:
+        utils.reattach_topic(topic_nodes,ibis_xaif)
 
     if save_to_dir:
         if file_name:
             with open(os.path.join(save_to_dir, file_name), 'w') as f:
                 json.dump(ibis_xaif, f, indent=4)
         else:
-            with open(os.path.join(save_to_dir, f"nodemerge_{datetime.datetime.now().strftime("%y%m%d%m%H%M%S")}.json"), 'w') as f:
+            with open(os.path.join(save_to_dir, f"nodemerge_{datetime.datetime.now().strftime("%y%m%d%H%M%S")}.json"), 'w') as f:
                 json.dump(ibis_xaif, f, indent=4)
     
     return ibis_xaif
