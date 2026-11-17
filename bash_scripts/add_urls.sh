@@ -1,0 +1,2 @@
+# curl -X POST -H "Content-Type:multipart/form-data" -F "links=<.scrap/sourcework/sample_links.json" -F "file=@test_docs/inputs/pdfs/Long Covid Research Briefing.pdf" http://localhost:8060/test-links
+curl -X POST -H "Content-Type:multipart/form-data" -F "links=<../.scrap/sourcework/sample_links.json" -F "file=@../test_docs/inputs/pdfs/Long Covid Research Briefing.pdf" http://localhost:8060/include-links

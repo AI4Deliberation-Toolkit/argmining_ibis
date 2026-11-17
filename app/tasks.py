@@ -70,7 +70,7 @@ def hello_world_llm():
 
 # Real tasks
 @celery_app.task
-async def argmining_complete_pipeline(topic, dir_name, save_final_to_dir='', concurrency=1, cache=False):
+async def argmining_complete_pipeline(topic, dir_name, source_urls={"file_links":[]}, save_final_to_dir='', concurrency=1, cache=False):
     # If cache has been set and only one file is submitted
     # return the existing result for that file
     # (Deal with using multiple cached files per request later)
@@ -98,7 +98,7 @@ async def argmining_complete_pipeline(topic, dir_name, save_final_to_dir='', con
                 shutil.rmtree(dir_name)
             return result
 
-    result = await argmining.argmine_ibis(topic, dir_name, concurrency=concurrency)
+    result = await argmining.argmine_ibis(topic, dir_name, source_urls=source_urls, concurrency=concurrency)
 
     # If cache has been set and only one file is submitted
     # save the result for that file for potential future use

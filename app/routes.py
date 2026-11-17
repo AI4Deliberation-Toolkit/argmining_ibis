@@ -215,6 +215,26 @@ def test_dict():
 
 
 
+# Testing URL/DOI input
+# 
+@flask_app.route('/test-links', methods=['POST'])
+async def test_link():
+    file_dict = request.files.to_dict() # from prior default endpoint
+    try:
+        links_dict = json.loads(request.form.get('links'))
+    except:
+        links_dict = {"file_links":[]}
+
+    printout = f'''
+Just got the following list of files: {[os.path.basename(file_dict[file].filename) for file in file_dict]}
+
+...and the following json of URL/file matches: {links_dict} ({type(links_dict)})
+'''
+    return printout
+
+
+
+
 
 
 ###################
@@ -357,6 +377,65 @@ async def argmine_ibis_celery():
 
 
 
+# Run the whole thing end-to-end
+# This needs to deal with the posted input and send it onward
+# and send back a celery task id
+@flask_app.route('/include-links', methods=['POST'])
+@limiter.limit("100 per day;10 per 15 minutes")
+async def argmine_ibis_celery_with_urls():
+    workspace = os.getenv('WORKSPACE', False)
+    if workspace:
+        final_dir = f"{workspace}/output"
+        if not os.path.exists(final_dir):
+            final_dir = ''
+
+    concurrency = int(request.args.get('conc', default=4))
+
+    use_cache = os.getenv('ARGMINE_CACHE_ON', False)
+    if use_cache:
+        logger.info('Using cached results where possible')
+    
+    # Check input
+    # file_list = request.files.getlist('file')
+    file_dict = request.files.to_dict()
+    topic = request.form.get('topic')
+    if not topic:
+        topic = ''
+    try:
+        links_dict = json.loads(request.form.get('links'))
+    except:
+        links_dict = {"file_links":[]}
+    
+
+    if not file_dict:
+        return jsonify({"error": "No file uploaded"}), 400  # Handle missing file
+
+    # Make the temp dir
+    temp_dir = new_tmp_dir()
+    if DEV_MODE:
+        with open(f"{temp_dir}/MODEL_NAME.txt", 'w') as f:
+            f.write(llm_caller.MODEL_NAME)
+    
+    # Save the input files
+    orig_dir = os.path.join(temp_dir, 'orig_files')
+    os.mkdir(orig_dir)
+    
+    for file in file_dict:
+        logger.info("Read file %s", file_dict[file].filename)
+        short_filename = os.path.basename(file_dict[file].filename)
+        file_dict[file].save(os.path.join(orig_dir, short_filename))
+
+    # Give the task to the celery worker
+    result = await tasks.argmining_complete_pipeline.adelay(topic, temp_dir, source_urls=links_dict, save_final_to_dir=final_dir, concurrency=concurrency)
+
+    # Return the celery task ID
+    logger.info("** Started task %s **", str(result.id))
+    logger.info("TASK STARTED (%s): %s"%(result.id, datetime.datetime.now().strftime("%y-%m-%d_%H:%M:%S")))
+    return jsonify({'task_id': result.id})
+
+
+
+
 # Direct conversion of JSON from XAIF to DG
 # Takes a title for the map's top-level node
 @flask_app.route('/quick-convert-to-dg', methods=['POST'])
@@ -369,9 +448,9 @@ def convertor():
         if not f:
             return jsonify({"error": "No file uploaded"}), 400  # Handle missing file
 
-        topic = request.form.get('topic')
-        if not topic:
-            return jsonify({"error": "No topic provided"}), 400  # Handle missing file
+        # topic = request.form.get('topic')
+        # if not topic:
+        #     return jsonify({"error": "No topic provided"}), 400  # Handle missing file
 
         # Generate unique filenames
         xaif_filename = f"{uuid.uuid4()}.json"
@@ -388,7 +467,7 @@ def convertor():
 
         ####################################
         
-        dg_format = xaif_dg_convert.xaif_to_dg(ibis_xaif, topic)
+        dg_format = xaif_dg_convert.xaif_to_dg(ibis_xaif)
 
         #####################################
 

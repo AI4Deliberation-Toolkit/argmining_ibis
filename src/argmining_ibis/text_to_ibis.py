@@ -386,7 +386,7 @@ def ibis_output_to_xaif(in_dict, verbose=False):
 
 
 # Add locution and speaker fields to all xaif with location info 
-def add_sources_to_xaif(xaif, full_text):
+def add_sources_to_xaif(xaif, full_text, source_urls={'file_links':[]}):
     md = MarkdownIt()
     tokens = md.parse(full_text)
 
@@ -398,13 +398,25 @@ def add_sources_to_xaif(xaif, full_text):
         node_id = l['nodeID']
         filename = l['text'].split(':')[0].strip()
         location = locate_quote(f"<IBIS_SRC_{node_id}>", tokens).strip()
+
+
+        url_list = [x['url'] for x in source_urls['file_links'] if x['filename'] == filename]
+        if len(url_list) == 1:
+            source_print = f" ({url_list[0]})"
+        elif len(url_list) > 1:
+            source_print = f" ({url_list[0]}"
+            for x in url_list[1:]:
+                source_print += f", {x}"
+            source_print += f")"
+        else:
+            source_print = ''
         
         full_location = f"{filename}\n{location}"
 
         if full_location not in nodes_at_locations:
             nodes_at_locations[full_location] = {
                 'nodes':[node_id],
-                'file': filename,
+                'file': filename + source_print,
                 'location': location
                 }
         else:

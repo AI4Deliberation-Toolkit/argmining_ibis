@@ -33,7 +33,7 @@ formatter = logging.Formatter('[%(asctime)s][%(levelname)s]: %(message)s')
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
-async def argmine_ibis(topic, temp_dir, concurrency=2):
+async def argmine_ibis(topic, temp_dir, source_urls={"file_links":[]}, concurrency=2):
     chunk_size=CHUNK_SIZE
     logger.info("Chunk size: %s", str(chunk_size))
     semaphore = asyncio.Semaphore(concurrency)
@@ -160,7 +160,7 @@ async def argmine_ibis(topic, temp_dir, concurrency=2):
         # This will match the node ID updates made to the IDs of the L-nodes themselves when xaif was merfed.
         # (they were paired in xaif_text_list: ordering and therefore numbering will match)
         remerged_text = update_stamps(marked_text_list)
-        merged_xaif = text_to_ibis.add_sources_to_xaif(merged_xaif, remerged_text)
+        merged_xaif = text_to_ibis.add_sources_to_xaif(merged_xaif, remerged_text, source_urls=source_urls)
 
         with open(os.path.join(temp_dir, f"sourced_{datetime.datetime.now().strftime("%y%m%d%H%M%S")}.json"), 'w') as f:
             json.dump(merged_xaif, f, indent=4)
@@ -168,19 +168,23 @@ async def argmine_ibis(topic, temp_dir, concurrency=2):
         ##################
         # 4. Merge nodes #
         ##################
-        logger.info('Merging nodes')
+        logger.info('>>> Merging nodes')
         try:
             merged_xaif = await merge_ibis.merge_ibis_nodes(merged_xaif, save_to_dir=temp_dir, concurrency=concurrency)
         except Exception as e:
-            logger.error("Node merging failed", exc_info=True)
+            logger.error("!!! Node merging failed", exc_info=True)
 
-        logger.info("!!! NODE MERGING DONE")
+        logger.info(">>> NODE MERGING DONE")
 
         #############################################
         # 4b. Reduce the number of top-level issues #
         #############################################
         logger.info('Condensing top-level issues')
-        condensed_xaif = await condense_ibis.condense_ibis(merged_xaif, save_to_dir=temp_dir)
+        try:
+            condensed_xaif = await condense_ibis.condense_ibis(merged_xaif, save_to_dir=temp_dir)
+        except Exception as e:
+            logger.error("!!! Node condensing failed", exc_info=True)
+        logger.info(">>> NODE CONDENSING DONE")
 
 
         #################
@@ -190,9 +194,8 @@ async def argmine_ibis(topic, temp_dir, concurrency=2):
         try:
             result_xaif = await crosslink_ibis.link_nodes(condensed_xaif, concurrency=concurrency, save_to_dir=temp_dir)
         except Exception as e:
-            logger.error("Node linking failed", exc_info=True)
-
-        logger.info("!!! NODE LINKING DONE")
+            logger.error("!!! Node linking failed", exc_info=True)
+        logger.info(">>> NODE LINKING DONE")
 
 
         ###############################
@@ -202,9 +205,9 @@ async def argmine_ibis(topic, temp_dir, concurrency=2):
         try:
             result_xaif = await inode_typing.subtype_nodes(result_xaif, save_to_dir=temp_dir, concurrency=concurrency)
         except Exception as e:
-            logger.info("Node typing failed")
+            logger.info("!!! Node typing failed")
 
-        logger.info("!!! NODE TYPING DONE")
+        logger.info(">>> NODE TYPING DONE")
 
     # Clear temp directory at the end if this wasn't in devmode
     finally:
