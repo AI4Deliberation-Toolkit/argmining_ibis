@@ -4,9 +4,11 @@ services:
       - ./app:/home/argmining_ibis/app
       - ./dev_temp:/home/argmining_ibis/temp
       - ./.argmine_cache:/home/argmining_ibis/cache
+      - ./.test_workspace:/home/argmining_ibis/workspace
    entrypoint:
       - /bin/sh
       - ./dev_boot.sh
    environment:
       - DEV_MODE=true
+      - WORKSPACE=/home/argmining_ibis/workspace
 

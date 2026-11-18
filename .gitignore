@@ -3,6 +3,7 @@
 .scrap
 .logs
 .argmine_cache
+.test_workspace
 huggingface
 **/__pycache__/**
 dev_temp

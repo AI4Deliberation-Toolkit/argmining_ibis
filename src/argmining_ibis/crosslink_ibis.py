@@ -4,12 +4,10 @@ import json
 
 import asyncio
 
-from app import llm_caller
-from app.utils import node_merge_output, siblings, line_of_ancestry, add_crosslink, batch_list
+from argmining_ibis import llm_caller
+from .utils import node_merge_output, siblings, line_of_ancestry, add_crosslink, batch_list
 
-CONCURRENCY=2
-
-async def get_issues_to_link(issue_ids, ibis_xaif, verbose=False):
+async def get_issues_to_link(issue_ids, ibis_xaif, concurrency=2, verbose=False):
     input_list = [(n['nodeID'], n['text']) for n in ibis_xaif['AIF']['nodes'] if n['nodeID'] in issue_ids]
     base_merger = {'merges':[]}
 
@@ -20,7 +18,7 @@ async def get_issues_to_link(issue_ids, ibis_xaif, verbose=False):
     if len(input_list) < 2:
         return base_merger
     
-    semaphore = asyncio.Semaphore(CONCURRENCY)
+    semaphore = asyncio.Semaphore(concurrency)
     async def get_issues_to_link_from_batch(b):
         async with semaphore:
             return await llm_caller.issues_to_link(b)
@@ -38,7 +36,7 @@ async def get_issues_to_link(issue_ids, ibis_xaif, verbose=False):
 
 
 
-async def get_propositions_to_link(prop_ids, ibis_xaif, verbose=False):
+async def get_propositions_to_link(prop_ids, ibis_xaif, concurrency=2, verbose=False):
     input_list = [(n['nodeID'], n['text']) for n in ibis_xaif['AIF']['nodes'] if n['nodeID'] in prop_ids]
     base_merger = {'merges':[]}
 
@@ -49,7 +47,7 @@ async def get_propositions_to_link(prop_ids, ibis_xaif, verbose=False):
     if len(input_list) < 2:
         return base_merger
 
-    semaphore = asyncio.Semaphore(CONCURRENCY)
+    semaphore = asyncio.Semaphore(concurrency)
     async def get_props_to_link_from_batch(b):
         async with semaphore:
             return await llm_caller.propositions_to_link(b)
@@ -73,12 +71,12 @@ async def get_propositions_to_link(prop_ids, ibis_xaif, verbose=False):
 
 
 
-async def link_nodes(ibis_xaif, file_name='', save_to_dir='', verbose=False):
+async def link_nodes(ibis_xaif, file_name='', save_to_dir='', concurrency=2, verbose=False):
     # (only need the first item in the output of link-finding, the pair of node IDs: 
     # the second will be an empty string in this case)
     # Issues
     # all_issues = [n for n in ibis_xaif['AIF']['nodes'] if n['type'] == 'I' and n['nodeID'] in ibis_xaif['IBIS']['issues']]
-    issue_link_search_result = await get_issues_to_link(ibis_xaif['IBIS']['issues'], ibis_xaif, verbose=verbose)
+    issue_link_search_result = await get_issues_to_link(ibis_xaif['IBIS']['issues'], ibis_xaif, concurrency=concurrency, verbose=verbose)
     if verbose:
         print("Result of issue search:", issue_link_search_result)
     possible_issues_to_link = [m['ids'] for m in issue_link_search_result['merges']]
@@ -88,7 +86,7 @@ async def link_nodes(ibis_xaif, file_name='', save_to_dir='', verbose=False):
                       and not siblings(i[0], i[1], ibis_xaif)]
     
     # Positions
-    position_link_search_result = await get_propositions_to_link(ibis_xaif['IBIS']['positions'], ibis_xaif, verbose=verbose)
+    position_link_search_result = await get_propositions_to_link(ibis_xaif['IBIS']['positions'], ibis_xaif, concurrency=concurrency, verbose=verbose)
     possible_positions_to_link = [m['ids'] for m in position_link_search_result['merges']]
     # Remove pairs which are direct siblings or for which one descends from the other
     positions_to_link = [i for i in possible_positions_to_link
@@ -96,7 +94,7 @@ async def link_nodes(ibis_xaif, file_name='', save_to_dir='', verbose=False):
                       and not siblings(i[0], i[1], ibis_xaif)]
 
     # Arguments
-    argument_link_search_result = await get_propositions_to_link(ibis_xaif['IBIS']['arguments'], ibis_xaif, verbose=verbose)
+    argument_link_search_result = await get_propositions_to_link(ibis_xaif['IBIS']['arguments'], ibis_xaif, concurrency=concurrency, verbose=verbose)
     possible_link_arguments = [m['ids'] for m in argument_link_search_result['merges']]
     # Remove pairs which are direct siblings or for which one descends from the other
     arguments_to_link = [i for i in possible_link_arguments
@@ -111,7 +109,7 @@ async def link_nodes(ibis_xaif, file_name='', save_to_dir='', verbose=False):
             with open(os.path.join(save_to_dir, file_name), 'w') as f:
                 json.dump(ibis_xaif, f, indent=4)
         else:
-            with open(os.path.join(save_to_dir, f"crosslink_{datetime.datetime.now().strftime("%y%m%d%m%H%M%S")}.json"), 'w') as f:
+            with open(os.path.join(save_to_dir, f"crosslink_{datetime.datetime.now().strftime("%y%m%d%H%M%S")}.json"), 'w') as f:
                 json.dump(ibis_xaif, f, indent=4)
 
     return ibis_xaif

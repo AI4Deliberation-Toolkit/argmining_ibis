@@ -1,15 +1,18 @@
-from celery import Celery
+from .celery_app import celery_app
 from asgiref.sync import async_to_sync
 
-from glob import glob
 import shutil
 import os
 import json
 import hashlib
+import asyncio
+
+from glob import glob
+from datetime import datetime
 
 from app import argmining
-from app.llm_caller import hello_world
-import asyncio
+from argmining_ibis.llm_caller import hello_world
+from argmining_ibis.xaif_dg_convert import shorten_headers
 
 import sys
 import logging
@@ -26,7 +29,6 @@ logger.addHandler(handler)
 DEV_MODE = os.getenv('DEV_MODE', False)
 
 
-celery_app = Celery('celery_tasks', backend='redis://localhost', broker='pyamqp://')
 
 async def async_waiting():
     await asyncio.sleep(20)
@@ -35,6 +37,7 @@ async def async_waiting():
 async def async_with_arg(x):
     await asyncio.sleep(1)
     return f"I was passed '{x}'\n"
+
 
 ################
 # CELERY TASKS #
@@ -47,22 +50,36 @@ def add(x, y):
 
 @celery_app.task
 def twenty_secs():
-    result = async_to_sync(async_waiting)()
+    result = async_waiting()
     return result
 
 @celery_app.task
 def pass_an_arg(x):
-    result = async_to_sync(async_with_arg)(x)
+    result = async_with_arg(x)
     return result
 
 @celery_app.task
-def argmining_complete_pipeline(dir_name, cache=False):
+def dummy_json():
+    return {'name': 'barbara'}
+
+@celery_app.task
+def hello_world_llm():
+    hello_response = hello_world()
+    return hello_response
+
+
+# Real tasks
+@celery_app.task
+async def argmining_complete_pipeline(topic, dir_name, source_urls={"file_links":[]}, save_final_to_dir='', concurrency=1, cache=False):
     # If cache has been set and only one file is submitted
     # return the existing result for that file
     # (Deal with using multiple cached files per request later)
     if cache:
         # Check if cache has been set to somewhere else
-        cache_dir = os.getenv('ARGMINE_CACHE', 'cache')
+        cache_dir = os.getenv('ARGMINE_CACHE', '/home/argmining_ibis/cache')
+        # if it doesn't exist, make it
+        if not os.path.isdir(cache_dir):
+            os.mkdir(cache_dir)
 
         input_file_list = glob(f"{dir_name}/orig_files/*")
         if len(input_file_list) == 1:
@@ -81,7 +98,7 @@ def argmining_complete_pipeline(dir_name, cache=False):
                 shutil.rmtree(dir_name)
             return result
 
-    result = async_to_sync(argmining.argmine_ibis)(dir_name)
+    result = await argmining.argmine_ibis(topic, dir_name, source_urls=source_urls, concurrency=concurrency)
 
     # If cache has been set and only one file is submitted
     # save the result for that file for potential future use
@@ -89,13 +106,21 @@ def argmining_complete_pipeline(dir_name, cache=False):
         with open(f"{cache_dir}/{filehex}.json", 'w') as f:
             json.dump(result, f, indent=4)
 
+    # Save copy of output if requested
+    if save_final_to_dir:
+        if os.path.exists(save_final_to_dir):
+            try:
+                with open(f"{save_final_to_dir}/{datetime.now().strftime("%y-%m-%d_%H%M%S")}.json", 'w') as f:
+                    json.dump(result, f, indent=4)
+            except:
+                with open(f"{save_final_to_dir}/{datetime.now().strftime("%y-%m-%d_%H%M%S")}.json", 'w') as f:
+                    json.dump({}, f, indent=4)
+
     return result
 
-@celery_app.task
-def dummy_json():
-    return {'name': 'barbara'}
+
 
 @celery_app.task
-def hello_world_llm():
-    hello_response = hello_world()
-    return hello_response
+async def shorten_dg_headings(dg_dict, concurrency=4):
+    result = await shorten_headers(dg_dict, concurrency=concurrency)
+    return result

@@ -18,9 +18,9 @@ import json
 from glob import glob
 
 
-from app import celery_tasks
-from app import xaif_dg_convert
-from app import llm_caller
+from app import tasks
+from argmining_ibis import xaif_dg_convert
+from argmining_ibis import llm_caller
 
 import asyncio
 import logging
@@ -48,8 +48,6 @@ limiter = Limiter(
     strategy='moving-window',
 )
 
-
-CONCURRENCY=4
 
 
 ###########################
@@ -101,13 +99,13 @@ def say_hello():
 # Check llm response is working from a celery worker
 @flask_app.route('/celery-hello', methods=['GET'])
 def check_model_with_celery():    
-    result = celery_tasks.hello_world_llm.delay()
+    result = tasks.hello_world_llm.delay()
     return jsonify(result.get())
 
 # Get a response from a celery worker
 @flask_app.route('/celery', methods=['GET'])
 def test_celery():    
-    result = celery_tasks.add.delay(5,5)
+    result = tasks.add.delay(5,5)
     answer = result.get()
     task_id = result.id
     return jsonify(f"Task {task_id} produced this very nice answer: {answer}")
@@ -115,9 +113,9 @@ def test_celery():
 # Get a response from a celery worker using the task id
 @flask_app.route('/celery-id', methods=['GET'])
 def test_celery_id():    
-    result = celery_tasks.add.delay(5,5)
+    result = tasks.add.delay(5,5)
     task_id = result.id
-    result_again = celery_tasks.celery_app.AsyncResult(task_id)
+    result_again = tasks.celery_app.AsyncResult(task_id)
     answer = result_again.get()
     return jsonify(f"Task {task_id} produced: {answer}")
 
@@ -196,25 +194,42 @@ def ping():
 # Sanity-checking test for async
 @flask_app.route('/async', methods=['GET'])
 async def test_async():    
-    result = celery_tasks.twenty_secs.delay()
+    result = await tasks.twenty_secs.adelay()
     return jsonify({'task_id': result.id})
 
 @flask_app.route('/async-arg', methods=['GET'])
 async def test_async_arg():    
-    result = celery_tasks.pass_an_arg.delay("foo")
+    result = await tasks.pass_an_arg.adelay("foo")
     return result.get()
 
 @flask_app.route('/add', methods=['GET'])
-async def test_add():    
-    result = celery_tasks.add.delay(2,2)
+def test_add():    
+    result = tasks.add.delay(2,2)
     return jsonify({'task_id': result.id})
 
 # Get a dict back for testing that json are being handled properly
 @flask_app.route('/dummy', methods=['GET'])
-async def test_dict():    
-    result = celery_tasks.dummy_json.delay()
+def test_dict():    
+    result = tasks.dummy_json.delay()
     return jsonify(result.get())
 
+
+# Testing URL/DOI input
+# 
+@flask_app.route('/test-links', methods=['POST'])
+async def test_link():
+    file_dict = request.files.to_dict() # from prior default endpoint
+    try:
+        links_dict = json.loads(request.form.get('links'))
+    except:
+        links_dict = {"file_links":[]}
+
+    printout = f'''
+Just got the following list of files: {[os.path.basename(file_dict[file].filename) for file in file_dict]}
+
+...and the following json of URL/file matches: {links_dict} ({type(links_dict)})
+'''
+    return printout
 
 
 
@@ -268,7 +283,12 @@ def new_tmp_dir(task_id=''):
 
     return temp_dir
 
-
+# return the celery log
+@flask_app.route('/celery-log', methods=['GET'])
+def get_celery_logs():
+    with open("/home/argmining_ibis/celery.log") as f:
+        celery_log = f.read()
+    return celery_log
 
 
 ####################
@@ -279,7 +299,7 @@ def new_tmp_dir(task_id=''):
 @flask_app.route('/task-status', methods=['POST'])
 def check_celery_task():
      task_id = request.form.get('id')
-     result = celery_tasks.celery_app.AsyncResult(task_id)
+     result = tasks.celery_app.AsyncResult(task_id)
      status = result.status
      if status == 'SUCCESS':
         logger.info("TASK COMPLETE (%s): %s"%(task_id, datetime.datetime.now().strftime("%y-%m-%d_%H:%M:%S")))
@@ -292,7 +312,7 @@ def check_celery_task():
 @flask_app.route('/task-result', methods=['POST'])
 def get_celery_task_result():
      task_id = request.form.get('id')
-     result = celery_tasks.celery_app.AsyncResult(task_id)
+     result = tasks.celery_app.AsyncResult(task_id)
      return jsonify(result.get())
 
 
@@ -307,6 +327,14 @@ def get_celery_task_result():
 @flask_app.route('/', methods=['POST'])
 @limiter.limit("100 per day;10 per 15 minutes")
 async def argmine_ibis_celery():
+    workspace = os.getenv('WORKSPACE', False)
+    if workspace:
+        final_dir = f"{workspace}/output"
+        if not os.path.exists(final_dir):
+            final_dir = ''
+
+    concurrency = int(request.args.get('conc', default=4))
+
     use_cache = os.getenv('ARGMINE_CACHE_ON', False)
     if use_cache:
         logger.info('Using cached results where possible')
@@ -314,6 +342,14 @@ async def argmine_ibis_celery():
     # Check input
     # file_list = request.files.getlist('file')
     file_dict = request.files.to_dict()
+    topic = request.form.get('topic')
+    if not topic:
+        topic = ''
+    try:
+        links_dict = json.loads(request.form.get('links'))
+    except:
+        links_dict = {"file_links":[]}
+    
 
     if not file_dict:
         return jsonify({"error": "No file uploaded"}), 400  # Handle missing file
@@ -334,18 +370,19 @@ async def argmine_ibis_celery():
         file_dict[file].save(os.path.join(orig_dir, short_filename))
 
     # Give the task to the celery worker
-    result = celery_tasks.argmining_complete_pipeline.delay(temp_dir, cache=use_cache)
+    result = await tasks.argmining_complete_pipeline.adelay(topic, temp_dir, source_urls=links_dict, save_final_to_dir=final_dir, concurrency=concurrency)
 
     # Return the celery task ID
     logger.info("** Started task %s **", str(result.id))
     logger.info("TASK STARTED (%s): %s"%(result.id, datetime.datetime.now().strftime("%y-%m-%d_%H:%M:%S")))
     return jsonify({'task_id': result.id})
-    
 
 
 
 
-@flask_app.route('/convert-to-dg', methods=['POST'])
+# Direct conversion of JSON from XAIF to DG
+# Takes a title for the map's top-level node
+@flask_app.route('/quick-convert-to-dg', methods=['POST'])
 def convertor():
     if request.method == 'POST':
 
@@ -355,9 +392,6 @@ def convertor():
         if not f:
             return jsonify({"error": "No file uploaded"}), 400  # Handle missing file
 
-        topic = request.form.get('topic')
-        if not topic:
-            return jsonify({"error": "No topic provided"}), 400  # Handle missing file
 
         # Generate unique filenames
         xaif_filename = f"{uuid.uuid4()}.json"
@@ -374,7 +408,7 @@ def convertor():
 
         ####################################
         
-        dg_format = xaif_dg_convert.xaif_to_dg(ibis_xaif, topic)
+        dg_format = xaif_dg_convert.xaif_to_dg(ibis_xaif)
 
         #####################################
 
@@ -384,3 +418,52 @@ def convertor():
         os.remove(xaif_filename)
 
         return jsonify(dg_format)
+
+
+# Conversion to DG which includes shortening text for DG display limits
+@flask_app.route('/convert-to-dg', methods=['POST'])
+async def convertor_with_titles():
+    if request.method == 'POST':
+        concurrency = int(request.args.get('conc', default=4))
+
+        logger.info("Converting file!")
+
+        f = request.files.get('file')
+        if not f:
+            return jsonify({"error": "No file uploaded"}), 400  # Handle missing file
+
+        delib_id = request.form.get('delib_id')
+        if not delib_id:
+            delib_id = -1
+
+        # Generate unique filenames
+        xaif_filename = f"{uuid.uuid4()}.json"
+        f.save(xaif_filename)
+
+        try:
+            with open(xaif_filename, 'r') as xaif_file:
+                ibis_xaif = json.load(xaif_file)  # Validate JSON format
+        except json.JSONDecodeError:
+            os.remove(xaif_filename)
+            return jsonify({"error": "Invalid JSON format"}), 400
+        
+        logger.info("File loaded")
+
+        ####################################
+        
+        dg_format = xaif_dg_convert.xaif_to_dg(ibis_xaif)
+
+        # Clean up the uploaded file
+        os.remove(xaif_filename)
+        logger.info("Conversion to DG done")
+
+        # test this later when the structure is defs right
+
+        logger.info("Shortening headers")
+        result = await tasks.shorten_dg_headings.adelay(dg_format, concurrency)
+        #####################################
+
+        # Return the celery task ID
+        logger.info("** Started task %s **", str(result.id))
+        logger.info("TASK STARTED (%s): %s"%(result.id, datetime.datetime.now().strftime("%y-%m-%d_%H:%M:%S")))
+        return jsonify({'task_id': result.id})

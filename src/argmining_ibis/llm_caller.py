@@ -9,8 +9,8 @@ from pydantic import BaseModel
 from typing import List
 from retrying import retry
 
-from app.utils import node_merge_output
-from app.ibis import ibis
+from .utils import node_merge_output, questionTypes, propositionTypes
+from .ibis import ibis, ibisSourced
 
 
 from openai import AsyncOpenAI, OpenAI, BadRequestError
@@ -33,8 +33,8 @@ logger.addHandler(handler)
 #########
 
 LLM_URL = os.getenv('LLM_URL', 'http://localhost:7060')
-LLM_API_KEY = Path('/run/secrets/LLM_API_KEY.txt').read_text().strip() if Path('/run/secrets/LLM_API_KEY.txt').exists() else os.getenv('LLM_API_KEY')
-# LLM_API_KEY = Path('./.secrets/LLM_API_KEY.txt').read_text().strip() if Path('./.secrets/LLM_API_KEY.txt').exists() else None
+# LLM_API_KEY = Path('/run/secrets/LLM_API_KEY.txt').read_text().strip() if Path('/run/secrets/LLM_API_KEY.txt').exists() else os.getenv('LLM_API_KEY')
+LLM_API_KEY = Path('./.secrets/LLM_API_KEY.txt').read_text().strip() if Path('./.secrets/LLM_API_KEY.txt').exists() else None
 MODEL_NAME = os.getenv('MODEL_NAME', 'nvidia/Gemma-4-31B-IT-NVFP4')
 
 
@@ -43,7 +43,7 @@ if LLM_API_KEY:
     client = AsyncOpenAI(
         base_url=f"{LLM_URL}/v1",
         api_key=LLM_API_KEY,
-        max_retries=3,
+        max_retries=5,
         timeout=60.0
     )
 
@@ -263,7 +263,7 @@ OUTPUT:''')
 
 
 # Performs the call with retries
-@retry(stop_max_attempt_number=5, wait_fixed=2000)
+# @retry(stop_max_attempt_number=5, wait_fixed=2000)
 async def make_call_with_retry(messages, output_format=None, model_name=MODEL_NAME):
     if output_format:
         logger.info("Making call...")
@@ -273,6 +273,7 @@ async def make_call_with_retry(messages, output_format=None, model_name=MODEL_NA
                     model=model_name,
                     messages=[{"role": msg['role'], "content": msg['content']} for msg in messages],
                     response_format=output_format,
+                    reasoning_effort="none",
                     timeout=120
                 )
     else:
@@ -281,6 +282,7 @@ async def make_call_with_retry(messages, output_format=None, model_name=MODEL_NA
         response = await client.chat.completions.create(
                     model=model_name,
                     messages=[{"role": msg['role'], "content": msg['content']} for msg in messages],
+                    reasoning_effort="none",
                     timeout=120
                 )
     
@@ -329,7 +331,7 @@ async def call_llm(messages, output_format=None, model_name=MODEL_NAME):
 
 
 # Find in text
-async def text_to_informal_ibis(input_text):
+async def text_to_informal_ibis_old(input_text):
     prompt = f'''
     For the given input text, return a list of JSON objects of three types (issue, position, argument) based on original text spans from the text.
     Valid fields for all three types are: id, orig, text, type. The orig field contains the original text span. The text field contains the original text span rephrased as a single grammatically correct question if it was a question, or rephrased as a complete sentence otherwise.
@@ -364,8 +366,90 @@ async def text_to_informal_ibis(input_text):
     return result
 
 
-# Linking
+async def text_to_informal_ibis_general(input_text):
+    prompt = f'''
+    For the given input text, return a list of JSON objects of three types (issue, position, argument) based on original text spans from the text.
+    Valid fields for all three types are: id, orig, text, type. 
+    Every line of the input text begins with a stamp of format <NUMBER>, e.g. <1>, <50>.
+    The orig field contains a list of dictionaries each of the form {{'quote': str, 'src': str}}.
+    The quote field in orig contains the original text span.
+    The src field in orig contains the <NUMBER> stamps at the begininning of the lines of the original text spans. 
+    The text field contains the original text span rephrased as a single grammatically correct question if it was a question, or rephrased as a complete sentence otherwise.
+    An example of orig and text fields is:
+    {{
+    "orig": [{{"quote": "As we do not know how long the condition lasts", "src": "<27>"}}]
+    "text": "We do not know how long the condition lasts.",
+    }}
+    Additional valid fields for objects of type 'issue' and 'position' are: parent.
+    Additional valid fields for objects of type 'argument' are: pro, con.
 
+    The types are described here:
+    1. Issues. Text spans which contain the main issue or question being addressed by the text. The 'parent' field is a list with the ID of any other issue, position or argument which this issue is a question about, if any. The 'parent' field should otherwise be an empty list. Give each issue an ID in the form 'issNUMBER'.
+
+    2. Positions. Text spans which provide answers to or ideas about the issues. The 'parent' field is a list with the ID of the issue each position is connected to. Give each position an ID in the form 'posNUMBER'. 
+
+    3. Arguments. Text spans which give reasons for or against the positions, or for or against other arguments. The 'pro' field is a list with the ID of every position or other argument it is a pro for. The 'con' field is a list with the ID of every position or other argument it is a con for. Give each argument an ID in the form 'argNUMBER'. 
+
+    Use UK spelling.
+
+    Input text:
+    {input_text}
+
+    Output JSON:
+    '''
+
+    # logger.info("Running on text beginning with: %s", input_text[:100])
+
+    messages = [{'role': 'user', 'content': prompt}]
+    result = await call_llm(messages, ibisSourced)
+
+    return result
+
+
+
+async def text_to_informal_ibis(central_issue,input_text):
+    prompt = f'''
+    From the input text, identify questions and relevant material with respect to the following CENTRAL ISSUE: {central_issue}
+    
+    To do this, return a list of JSON objects of three types (issue, position, argument) based on original text spans from the text.
+    Valid fields for all three types are: id, orig, text, type. 
+    
+    Every line of the input text begins with a stamp of format <NUMBER>, e.g. <1>, <50>.
+    The orig field contains a list of dictionaries each of the form {{'quote': str, 'src': str}}.
+    The quote field in orig contains the original text span.
+    The src field in orig contains the <NUMBER> stamps at the begininning of the lines of the original text spans. 
+    The text field contains the original text span rephrased as a single grammatically correct question if it was a question, or rephrased as a complete sentence otherwise.
+    An example of orig and text fields is:
+    {{
+    "orig": [{{"quote": "As we do not know how long the condition lasts", "src": "<27>"}}]
+    "text": "We do not know how long the condition lasts.",
+    }}
+    Additional valid fields for objects of type 'issue' and 'position' are: parent.
+    Additional valid fields for objects of type 'argument' are: pro, con.
+
+    The types are described here:
+    1. Issues. Text spans which contain the main issue or question being addressed by the text. The 'parent' field is a list with the ID of any other issue, position or argument which this issue is a question about, if any. The 'parent' field should otherwise be an empty list. Any issue which does not have another issue, position or argument as a parent must be directly relevant to addressing to the CENTRAL ISSUE. Give each issue an ID in the form 'issNUMBER'.
+
+    2. Positions. Text spans which provide answers to or ideas about the issues. The 'parent' field is a list with the ID of the issue each position is connected to. Give each position an ID in the form 'posNUMBER'. 
+
+    3. Arguments. Text spans which give reasons for or against the positions, or for or against other arguments. The 'pro' field is a list with the ID of every position or other argument it is a pro for. The 'con' field is a list with the ID of every position or other argument it is a con for. Give each argument an ID in the form 'argNUMBER'. 
+
+    Use UK spelling.
+
+    Input text:
+    {input_text}
+
+    Output JSON:
+    '''
+
+    messages = [{'role': 'user', 'content': prompt}]
+    result = await call_llm(messages, ibisSourced)
+
+    return result
+
+
+
+# Linking
 async def propositions_to_link(input_list):
 
     prompt = f'''
@@ -555,5 +639,137 @@ Output list:
     
     messages = [{'role': 'user', 'content': prompt}]
     result = await call_llm(messages, node_merge_output)
+    
+    return result
+
+
+
+#####################################
+# Typing Questions and Propositions #
+#####################################
+
+# this belongs in the llm_caller
+async def assign_question_types(input_list):
+    prompt = f'''
+For the given input list of questions with ID codes, sort them into sets according to type.
+The subsets must be exclusive, with no question appearing in more than one subset.
+Return a json with a field for each type, where each field contains a list of the ID codes of questions in the type/subset.
+
+The possible types are:
+1. "infoseekq". Information-seeking questions. These are questions seeking specific and objective factual information, such as a definition, a statistic, or an event. The answer to these questions should be objective and possible to provide with sufficient access to information. The answer does not depend on the person answering.
+Examples:
+How many people live in Dublin?
+When is a person considered homeless?
+What is the impact of homelessness on families?
+
+
+2. "delibq". Deliberative questions. These are questions seeking suggestions, ideas and decisions. They may not have an objective answer, and instead have an answer that must be reached through discussion. They are especially likely to be questions about potential actions, or evaluative questions. The answer depends on a judgement or decision by the person who answers the question: information may inform this, but information is not an answer by itself. 
+Examples:
+How can homeless shelters better ensure safety of the people staying there?
+Should Dublin City Council be more proactive in preventing homelessness?
+How can we reach people at risk of homelessness?
+
+
+Example input 1:
+[('id1', "What are the demands of local residents?"), ('id2', "What should happen with the park?"), ('id3', "Should a new playground be added to the park?"), ('id4', "Are there enough schools in the area?"), ('id5', "How does the local community manage anti-social behaviour?"), ('id6', "What support for skill-development is available to young people?")]
+
+
+
+Example output 1:
+{{"infoseekq":['id1', 'id6', 'id5'],"delibq":['id2', 'id3', 'id4']}}
+
+
+
+Input list:
+{input_list}
+
+Output list:
+'''
+    
+    messages = [{'role': 'user', 'content': prompt}]
+    result = await call_llm(messages, questionTypes)
+    
+    return result
+
+async def assign_proposition_types(input_list):
+    prompt = f'''
+For the given input list of statements with ID codes, sort them into sets according to type.
+The subsets must be exclusive, with no statement appearing in more than one subset.
+Return a json with a field for each type, where each field contains a list of the ID codes of statements in the type/subset.
+
+The possible types are:
+1. "fact". Facts. These are statements of objective factual information, such as a definition, a statistic, or an event.  They can be proved or disproved.
+Examples:
+Dublin has a population of approximately 1 million.
+The definition of homelessness depends on the jurisdiction.
+Schools report signficiantly higher levels of stress and anxiety among homeless children versus children in families with homes.
+
+2. "policy". Policies. These are statements about what could or should be (or not), such as conditions that should or should not exist or an action that should or should not be taken.
+Examples:
+Updating definitions of homelessness will let us better recognise the scale of hidden homelessness.
+It should not be difficult to find housing with rent that is a third of minimum wage.
+Illegal evictions should be stopped by law enforcement.
+
+3. "value". Values. These are statements expressing an evaluation or comparison, whether as positive or negative or one thing versus another.
+Examples:
+It is most important to prioritise children and those above the age of 65 for rehousing.
+Support at the point of homelessness is less effective than intervention when risk of homelessness becomes high.
+
+
+Example input 1:
+[('id1', "Breakfast clubs improve academic performance"), ('id2', "There should be more free community spaces so parents can meet each other"), ('id3', "Managing anti-social behviour is less effective than preventing it"), ('id4', "It is better to support families to care for their own children."), ('id5', "Teachers should not have to make up shortfall using their own wages"), ('id6', "The budget for extra services is extremely limited.")]
+
+
+
+Example output 1:
+{{"fact":['id1', 'id6'],"policy":['id5', 'id2],"value":['id4', 'id3]}}
+
+
+
+Input list:
+{input_list}
+
+Output list:
+'''
+    
+    messages = [{'role': 'user', 'content': prompt}]
+    result = await call_llm(messages, propositionTypes)
+    
+    return result
+
+
+
+async def shorten_for_dg(input_list):
+    class idTextPair(BaseModel):
+        id:int
+        text:str
+    class idTextList(BaseModel):
+        pairs: List[idTextPair]
+
+
+    prompt = f'''
+    For the given input list of pairs of ID codes and original sentences, rephrase them to being at most 65 characters.
+    Preserve the meaning of the original text as much as possible.
+    Return a list of the rephrases as pairs of the original ID code and the rephrased sentence.
+    Use UK spelling.
+    
+    
+    Example input 1:
+    [(0, "What financial support is available to people unable to work due to long covid, particularly former key workers?"), (32, "What advice did Boris Johnson receive about long covid during the pandemic, and why was he sceptical of the seriousness of the condition?"), (105, "The British Medical Association has called for financial support and improved services for doctors and healthcare staff affected by long covid due to its impact on the NHS workforce."), (97, "The National Institute for Health and Care Excellence (NICE) has produced guidance covering the identification, assessment and management of the long-term effects of Covid-19.")]
+
+    
+    Example output 1:
+    [(0, What financial support is available to people unable to work due to long covid?"),(32,"What advice did Boris Johnson receive about long covid during the pandemic?"), (105, "The British Medical Association has called for support for affected staff."), (97, "NICE has produced guidance related to the long-term effects of Covid-19.")]
+    
+    
+    
+    Input list:
+    {input_list}
+    
+    Output list:
+    '''
+        
+    messages = [{'role': 'user', 'content': prompt}]
+    result = await call_llm(messages, idTextList)
     
     return result
