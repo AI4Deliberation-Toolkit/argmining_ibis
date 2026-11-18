@@ -33,8 +33,8 @@ logger.addHandler(handler)
 #########
 
 LLM_URL = os.getenv('LLM_URL', 'http://localhost:7060')
-# LLM_API_KEY = Path('/run/secrets/LLM_API_KEY.txt').read_text().strip() if Path('/run/secrets/LLM_API_KEY.txt').exists() else os.getenv('LLM_API_KEY')
-LLM_API_KEY = Path('./.secrets/LLM_API_KEY.txt').read_text().strip() if Path('./.secrets/LLM_API_KEY.txt').exists() else None
+LLM_API_KEY = Path('/run/secrets/LLM_API_KEY.txt').read_text().strip() if Path('/run/secrets/LLM_API_KEY.txt').exists() else os.getenv('LLM_API_KEY')
+# LLM_API_KEY = Path('./.secrets/LLM_API_KEY.txt').read_text().strip() if Path('./.secrets/LLM_API_KEY.txt').exists() else None
 MODEL_NAME = os.getenv('MODEL_NAME', 'nvidia/Gemma-4-31B-IT-NVFP4')
 
 
