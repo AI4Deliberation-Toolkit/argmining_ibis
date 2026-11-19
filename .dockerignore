@@ -1,0 +1,17 @@
+.argmine_cache
+.examples
+.logs
+.scrap
+.secrets
+.test_workspace
+.vscode
+bash_scripts
+dev_temp
+test_docs
+**.ipynb
+**/__pycache__/**
+external_tester.py
+comma_example
+test_docs/inputs/bigset
+docker-compose.*
+testbuild.sh
