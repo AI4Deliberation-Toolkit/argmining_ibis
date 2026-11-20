@@ -1,6 +1,7 @@
 from collections import Counter
 from copy import deepcopy
 import asyncio
+import re
 
 from . import dg_utils, utils, llm_caller
 
@@ -305,7 +306,16 @@ def xaif_to_dg(ibis_xaif, delib_id=-1):
     else:
         top_type = "Issue"
 
-    map_node = make_dg_node(top_xaif_node['nodeID'], delib_id, top_type, top_xaif_node['text'], top_xaif_node['text'], '', 0)
+    map_node = {
+        "NodeID": top_xaif_node['nodeID'],
+        "ParentID": delib_id,
+        "NodeType": top_type,
+        "HeadingText": top_xaif_node['text'],
+        "CompactText": top_xaif_node['text'],
+        "ExpandedText": '',
+        "AvgWeight": 0
+    }
+
     dg_dict['Nodes'].append(map_node)
 
     # Create crosslinks (simply)
@@ -335,12 +345,27 @@ def xaif_to_dg(ibis_xaif, delib_id=-1):
     # Turn any duplicate IDs into different branches
     resolve_duplicates(dg_dict)
 
+    # Change newlines to HTML breaks
+    for n in dg_dict['Nodes']:
+        n['ExpandedText'] = re.sub("\n", "<br>", n['ExpandedText'])
+
     return dg_dict
 
 
 # Reduce length of text that will go in the HeadingText field to the length that DG accepts
 async def shorten_headers(dg_dict, concurrency=4):
     input_list_all = [(n['NodeID'], n['HeadingText']) for n in dg_dict['Nodes'] if len(n['HeadingText']) > 70]
+
+    # Add AI modification disclaimer to top node if heading isreduced in length (otherwise is completely written by user)
+    all_nodes = [n['NodeID'] for n in dg_dict['Nodes']]
+    top_nodes = [n for n in dg_dict['Nodes'] if n['ParentID'] not in all_nodes]
+    if len(top_nodes) == 1:
+        top_node = top_nodes[0]
+        if len(top_node['HeadingText']) > 70:
+            if top_node['ExpandedText'] == '':
+                top_node['ExpandedText'] = "The heading of this node was modified by AI to better fit the length limit."
+            else:
+                top_node['ExpandedText'] += "<br><br>The heading of this node was modified by AI to better fit the length limit."
 
     semaphore = asyncio.Semaphore(concurrency)
     async def shorten_titles_in_batch(b):
@@ -363,4 +388,19 @@ async def shorten_headers(dg_dict, concurrency=4):
             node_to_update['HeadingText'] = update['text']
         except:
             pass
+    return dg_dict
+
+
+def replace_map_parent(old_parent, new_parent, dg_dict):
+
+    matching_nodes = [n for n in dg_dict['Nodes'] if n['ParentID'] == old_parent]
+    if len(matching_nodes) != 1:
+        return dg_dict
+
+    matching_node = matching_nodes[0]
+
+    matching_node['ParentID'] = new_parent
+    if new_parent == -1:
+        matching_node['NodeType'] = 'Map'
+
     return dg_dict

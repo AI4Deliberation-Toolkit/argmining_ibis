@@ -49,6 +49,12 @@ async def argmine_ibis(topic, temp_dir, source_urls={"file_links":[]}, concurren
 
         # Convert input files to plaintext
         local_input_files = glob(os.path.join(orig_dir, "*"))
+
+        if len(local_input_files) == 0:
+            logger.info('No files submitted, creating topic-only map')
+            xaif = text_to_ibis.topic_only_xaif(topic)
+            return xaif
+
         logger.info('Creating texts for %s', str(local_input_files))
         try:
             text_list = intake_files.create_texts(local_input_files, chunk_size=chunk_size, save_to_dir=text_dir)

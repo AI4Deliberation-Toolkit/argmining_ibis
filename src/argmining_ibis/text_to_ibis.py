@@ -10,7 +10,9 @@ import asyncio
 from markdown_it import MarkdownIt
 
 from . import llm_caller
-from .utils import new_ibis_aif, add_node, add_edge
+# from .utils import new_ibis_aif, add_node, add_edge
+from . import utils
+
 
 # Add logs to the docker logs
 logger = logging.getLogger()
@@ -222,7 +224,7 @@ def get_valid_ibis_descendants(node_id, nodelist, verbose=False):
 
 
 def ibis_output_to_xaif(in_dict, verbose=False):
-    xaif = new_ibis_aif()
+    xaif = utils.new_ibis_aif()
     all_i_node_ids = [n['id'] for n in in_dict['ibis']]
     
     if verbose:
@@ -284,7 +286,7 @@ def ibis_output_to_xaif(in_dict, verbose=False):
             xaif['IBIS']['arguments'].append(n['id'])
 
         # Create and add I-node
-        i_node = add_node(n['id'], 'I', n['text'], xaif)
+        i_node = utils.add_node(n['id'], 'I', n['text'], xaif)
 
         # Create and add L and YA nodes for each origin segment
         i_node_anchors[i_node['nodeID']] = []
@@ -294,19 +296,19 @@ def ibis_output_to_xaif(in_dict, verbose=False):
         
         for orig in n['orig']:
             t = orig['quote']
-            l_node = add_node(f"l_{orig_counter}_{n['id']}", 'L', t, xaif)
-            ya_node = add_node(f"ya_{orig_counter}_{n['id']}", "YA", "Default Illocuting", xaif)
+            l_node = utils.add_node(f"l_{orig_counter}_{n['id']}", 'L', t, xaif)
+            ya_node = utils.add_node(f"ya_{orig_counter}_{n['id']}", "YA", "Default Illocuting", xaif)
             orig_counter += 1 
 
             # Record the created L-node as anchor point for this I-node
             i_node_anchors[i_node['nodeID']].append(l_node['nodeID'])
         
             # Connect from L to YA
-            add_edge(l_node['nodeID'],ya_node['nodeID'],edge_counter, xaif)
+            utils.add_edge(l_node['nodeID'],ya_node['nodeID'],edge_counter, xaif)
             edge_counter += 1
 
             # Connect from YA to I
-            add_edge(ya_node['nodeID'],i_node['nodeID'],edge_counter, xaif)
+            utils.add_edge(ya_node['nodeID'],i_node['nodeID'],edge_counter, xaif)
             edge_counter += 1
 
             if verbose:
@@ -342,16 +344,16 @@ def ibis_output_to_xaif(in_dict, verbose=False):
             relID = f"rel{relnode_counter}"
             relnode_counter += 1
             if c['reltype'] == 'Pro':
-                add_node(relID, 'RA', 'Pro', xaif)
+               utils. add_node(relID, 'RA', 'Pro', xaif)
             elif c['reltype'] == 'Con':
-                add_node(relID, 'CA', 'Con', xaif)
+                utils.add_node(relID, 'CA', 'Con', xaif)
             else:
-                add_node(relID, 'MA', c['reltype'], xaif)
+                utils.add_node(relID, 'MA', c['reltype'], xaif)
 
             # Link it to the I-nodes with a pair of edges
-            add_edge(n['id'], relID, edge_counter, xaif)
+            utils.add_edge(n['id'], relID, edge_counter, xaif)
             edge_counter += 1
-            add_edge(relID, c['id'], edge_counter, xaif)
+            utils.add_edge(relID, c['id'], edge_counter, xaif)
             edge_counter += 1
 
 
@@ -360,26 +362,26 @@ def ibis_output_to_xaif(in_dict, verbose=False):
             for premise_l_anchor in i_node_anchors[n['id']]:
                 # Create and add TA node
                 taID = f"ta{ta_counter}"
-                add_node(taID, "TA", "Default Transition", xaif)
+                utils.add_node(taID, "TA", "Default Transition", xaif)
                 ta_counter += 1
                 
                 # Create and add YA node
                 yaID = f"ya_{taID}"
-                ya_node = add_node(yaID, "YA", "Default Illocution", xaif)
+                ya_node = utils.add_node(yaID, "YA", "Default Illocution", xaif)
 
                 # Connect TA to rel via YA with a pair of edges
-                add_edge(taID, yaID, edge_counter, xaif)
+                utils.add_edge(taID, yaID, edge_counter, xaif)
                 edge_counter += 1
-                add_edge(yaID, relID, edge_counter, xaif)
+                utils.add_edge(yaID, relID, edge_counter, xaif)
                 edge_counter += 1
 
                 # Set current premise L-node as consequent of the TA
-                add_edge(taID, premise_l_anchor, edge_counter, xaif)
+                utils.add_edge(taID, premise_l_anchor, edge_counter, xaif)
                 edge_counter += 1
 
                 # Set all conclusion L-nodes as antecedents of the TA
                 for anchoring_l in i_node_anchors[c['id']]:
-                    add_edge(anchoring_l, taID, edge_counter, xaif)
+                    utils.add_edge(anchoring_l, taID, edge_counter, xaif)
                     edge_counter += 1
                 
     return xaif
@@ -444,8 +446,15 @@ def add_sources_to_xaif(xaif, full_text, source_urls={'file_links':[]}):
     xaif['AIF']['locutions'] = locutions
 
     return xaif
-    
 
+# Make an XAIF with only the topic I-node and its YA- and L-nodes
+def topic_only_xaif(topic):
+    xaif = utils.new_ibis_aif()
+    topic_i = utils.add_node('origI', 'I', topic, xaif)
+    topic_l = utils.add_node('origL', 'L', f"User: {topic}", xaif)
+    xaif['IBIS']['issues'].append('origI')
+    utils.add_s_node_with_edges('origYA','YA', f"Default Illocuting", [topic_l['nodeID']], topic_i['nodeID'], xaif)
+    return xaif
 
 # Given a text, return an IBIS graph in AIF
 # If given a directory to use, will save the original model output and the AIF as JSON files
