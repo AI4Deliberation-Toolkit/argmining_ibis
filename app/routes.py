@@ -272,6 +272,11 @@ def new_tmp_dir(task_id=''):
             temp_dir = f"temp_{datetime.datetime.now().strftime("%y-%m-%d_%H-%M")}_{llm_caller.MODEL_NAME.split('/')[0]}"
         else:
             temp_dir = f"temp_{datetime.datetime.now().strftime("%y-%m-%d_%H-%M")}_{llm_caller.MODEL_NAME.split('/')[0]}_{task_id}"
+
+        workspace = os.getenv('WORKSPACE', False)
+        if workspace:
+            temp_dir = os.path.join(workspace, temp_dir)
+
     else:
         if task_id=='':
             temp_dir = os.path.join(tempfile.gettempdir(), str(uuid.uuid4()))
@@ -351,8 +356,8 @@ async def argmine_ibis_celery():
         links_dict = {"file_links":[]}
     
 
-    if not file_dict:
-        return jsonify({"error": "No file uploaded"}), 400  # Handle missing file
+    if not file_dict and not topic:
+        return jsonify({"error": "No files or topic uploaded"}), 400  # Handle missing file
 
     # Make the temp dir
     temp_dir = new_tmp_dir()
@@ -450,14 +455,11 @@ async def convertor_with_titles():
         logger.info("File loaded")
 
         ####################################
-        
         dg_format = xaif_dg_convert.xaif_to_dg(ibis_xaif)
 
         # Clean up the uploaded file
         os.remove(xaif_filename)
         logger.info("Conversion to DG done")
-
-        # test this later when the structure is defs right
 
         logger.info("Shortening headers")
         result = await tasks.shorten_dg_headings.adelay(dg_format, concurrency)
@@ -467,3 +469,25 @@ async def convertor_with_titles():
         logger.info("** Started task %s **", str(result.id))
         logger.info("TASK STARTED (%s): %s"%(result.id, datetime.datetime.now().strftime("%y-%m-%d_%H:%M:%S")))
         return jsonify({'task_id': result.id})
+
+@flask_app.route('/dg-replace-attachment', methods=['POST'])
+def replace_dg_parent_id():
+    old_parent = int(request.form.get('old_id'))
+    new_parent = int(request.form.get('new_id'))
+
+    f = request.files.get('file')
+    
+    # Generate unique filenames
+    dg_filename = f"{uuid.uuid4()}.json"
+    f.save(dg_filename)
+
+    try:
+        with open(dg_filename, 'r') as dg_file:
+            dg_dict = json.load(dg_file)  # Validate JSON format
+    except json.JSONDecodeError:
+        os.remove(dg_filename)
+        return jsonify({"error": "Invalid JSON format"}), 400
+
+    dg_dict = xaif_dg_convert.replace_map_parent(old_parent, new_parent, dg_dict)
+
+    return dg_dict
